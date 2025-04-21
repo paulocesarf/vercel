@@ -1,19 +1,20 @@
-"use client"
+"use client";
 
-import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
-import { zodResolver } from "@hookform/resolvers/zod"
-import { useForm } from "react-hook-form"
-import { z } from "zod"
-import { Loader2, Shield, Clock } from "lucide-react"
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { Loader2, Shield } from "lucide-react";
 
-import { DashboardLayout } from "@/components/dashboard-layout"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
-import { supabase } from "@/lib/supabase/client"
-import { useToast } from "@/components/ui/use-toast"
+import { DashboardLayout } from "@/components/dashboard-layout";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { supabase } from "@/lib/supabase/client";
+import { useToast } from "@/components/ui/use-toast";
+import { createCsrfToken } from "@/lib/csrf";
 
 const passwordFormSchema = z
   .object({
@@ -30,14 +31,14 @@ const passwordFormSchema = z
   .refine((data) => data.newPassword === data.confirmPassword, {
     message: "Passwords do not match",
     path: ["confirmPassword"],
-  })
+  });
 
 export default function SettingsPage() {
-  const router = useRouter()
-  const { toast } = useToast()
-  const [isLoading, setIsLoading] = useState(false)
-  const [profile, setProfile] = useState<any>(null)
-  const [plans, setPlans] = useState<any[]>([])
+  const router = useRouter();
+  const { toast } = useToast();
+  const [isLoading, setIsLoading] = useState(false);
+  const [profile, setProfile] = useState<any>(null);
+  const [csrfToken, setCsrfToken] = useState<string>("");
 
   const passwordForm = useForm<z.infer<typeof passwordFormSchema>>({
     resolver: zodResolver(passwordFormSchema),
@@ -46,62 +47,82 @@ export default function SettingsPage() {
       newPassword: "",
       confirmPassword: "",
     },
-  })
+  });
 
   useEffect(() => {
     async function fetchData() {
+      // Gerar token CSRF
+      const token = createCsrfToken();
+      setCsrfToken(token);
+
       // Get user profile
       const {
         data: { user },
-      } = await supabase.auth.getUser()
+      } = await supabase.auth.getUser();
 
       if (!user) {
-        router.push("/login")
-        return
+        router.push("/login");
+        return;
       }
 
-      const { data: profileData } = await supabase.from("profiles").select("*, plans(*)").eq("id", user.id).single()
+      const { data: profileData, error } = await supabase
+        .from("profiles")
+        .select("*, plans(*)")
+        .eq("id", user.id)
+        .single();
 
-      if (profileData) {
-        setProfile(profileData)
+      if (error || !profileData) {
+        toast({
+          title: "Error",
+          description: "Failed to load profile. Please try again.",
+          variant: "destructive",
+        });
+        router.push("/login");
+        return;
       }
 
-      // Get available plans
-      const { data: plansData } = await supabase.from("plans").select("*").order("price", { ascending: true })
-
-      if (plansData) {
-        setPlans(plansData)
-      }
+      setProfile(profileData);
     }
 
-    fetchData()
-  }, [router])
+    fetchData();
+  }, [router, toast]);
 
   async function onPasswordSubmit(values: z.infer<typeof passwordFormSchema>) {
-    setIsLoading(true)
+    setIsLoading(true);
 
     try {
-      // Update password
-      const { error } = await supabase.auth.updateUser({
-        password: values.newPassword,
-      })
+      const response = await fetch("/api/update-password", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          currentPassword: values.currentPassword,
+          newPassword: values.newPassword,
+          csrfToken,
+        }),
+      });
 
-      if (error) throw error
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || "Failed to update password");
+      }
 
       toast({
         title: "Password Updated",
         description: "Your password has been successfully updated.",
-      })
+      });
 
-      passwordForm.reset()
+      passwordForm.reset();
     } catch (error: any) {
       toast({
         title: "Error",
         description: error.message || "Failed to update password. Please try again.",
         variant: "destructive",
-      })
+      });
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
   }
 
@@ -109,26 +130,33 @@ export default function SettingsPage() {
     <DashboardLayout isAdmin={profile?.role === "admin"}>
       <div className="flex flex-col gap-6">
         <div className="flex flex-col gap-2">
+          <h1 className="text-3xl font-bold text-white">Settings</h1>
+          <p className="text-white/70">Manage your account settings</p>
         </div>
 
         <div className="grid gap-6 md:grid-cols-2">
           <Card className="bg-black/30 border-white/10 text-white">
             <CardHeader>
+              <CardTitle>Account Details</CardTitle>
               <CardDescription className="text-white/70">Your account details</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div>
                 <h3 className="text-sm font-medium text-white/70">Username</h3>
-                <p className="text-white">{profile?.username}</p>
+                <p className="text-white">{profile?.username || "Loading..."}</p>
               </div>
               <div>
                 <h3 className="text-sm font-medium text-white/70">ID</h3>
-                <p className="text-white">{profile?.id}</p>
+                <p className="text-white">{profile?.id || "Loading..."}</p>
               </div>
               <div>
                 <h3 className="text-sm font-medium text-white/70">Current Plan</h3>
                 <p className="text-white">
-                  {profile?.plans?.name || "None"} — ({profile?.plans ? `${profile.plans.max_concurrent_attacks} concs - ${profile.plans.max_time} seconds)` : "N/A"}
+                  {profile?.plans?.name || "None"} — (
+                  {profile?.plans
+                    ? `${profile.plans.max_concurrent_attacks} concs - ${profile.plans.max_time} seconds`
+                    : "N/A"}
+                  )
                 </p>
               </div>
               <div>
@@ -148,6 +176,7 @@ export default function SettingsPage() {
             <CardContent>
               <Form {...passwordForm}>
                 <form onSubmit={passwordForm.handleSubmit(onPasswordSubmit)} className="space-y-4">
+                  <input type="hidden" name="csrfToken" value={csrfToken} />
                   <FormField
                     control={passwordForm.control}
                     name="currentPassword"
@@ -155,13 +184,17 @@ export default function SettingsPage() {
                       <FormItem>
                         <FormLabel className="text-white">Current Password</FormLabel>
                         <FormControl>
-                          <Input type="password" {...field} className="bg-black/50 border-white/20 text-white" />
+                          <Input
+                            type="password"
+                            {...field}
+                            className="bg-black/50 border-white/20 text-white"
+                            disabled={isLoading}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
-
                   <FormField
                     control={passwordForm.control}
                     name="newPassword"
@@ -169,13 +202,17 @@ export default function SettingsPage() {
                       <FormItem>
                         <FormLabel className="text-white">New Password</FormLabel>
                         <FormControl>
-                          <Input type="password" {...field} className="bg-black/50 border-white/20 text-white" />
+                          <Input
+                            type="password"
+                            {...field}
+                            className="bg-black/50 border-white/20 text-white"
+                            disabled={isLoading}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
-
                   <FormField
                     control={passwordForm.control}
                     name="confirmPassword"
@@ -183,13 +220,17 @@ export default function SettingsPage() {
                       <FormItem>
                         <FormLabel className="text-white">Confirm New Password</FormLabel>
                         <FormControl>
-                          <Input type="password" {...field} className="bg-black/50 border-white/20 text-white" />
+                          <Input
+                            type="password"
+                            {...field}
+                            className="bg-black/50 border-white/20 text-white"
+                            disabled={isLoading}
+                          />
                         </FormControl>
                         <FormMessage />
                       </FormItem>
                     )}
                   />
-
                   <Button type="submit" variant="gradient" disabled={isLoading}>
                     {isLoading ? (
                       <>
@@ -207,5 +248,5 @@ export default function SettingsPage() {
         </div>
       </div>
     </DashboardLayout>
-  )
+  );
 }

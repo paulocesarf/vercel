@@ -1,166 +1,132 @@
-"use client"
+"use client";
 
-import { useState, useEffect } from "react"
-import { useRouter } from "next/navigation"
-import { zodResolver } from "@hookform/resolvers/zod"
-import { useForm } from "react-hook-form"
-import { z } from "zod"
-import { Loader2, Info, CheckCircle } from "lucide-react" // Added CheckCircle
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { useForm } from "react-hook-form";
+import { z } from "zod";
+import { Loader2, Info, CheckCircle } from "lucide-react";
+import { createCsrfToken } from "@/lib/csrf";
 
-import { DashboardLayout } from "@/components/dashboard-layout"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form"
-import { Input } from "@/components/ui/input"
-import { Button } from "@/components/ui/button"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { supabase } from "@/lib/supabase/client"
-import { useToast } from "@/components/ui/use-toast"
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { DashboardLayout } from "@/components/dashboard-layout";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Form,
+  FormControl,
+  FormDescription,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { supabase } from "@/lib/supabase/client";
+import { useToast } from "@/components/ui/use-toast";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 
 const formSchema = z.object({
   host: z.string().min(1, { message: "Host is required" }),
-  port: z.coerce.number().int().min(1).max(65535),
-  time: z.coerce.number().int().min(1),
+  port: z.coerce.number().int().min(1).max(65535, { message: "Port must be between 1 and 65535" }),
+  time: z.coerce.number().int().min(1, { message: "Time must be at least 1 second" }),
   method: z.string().min(1, { message: "Method is required" }),
-})
+});
 
 export default function AttackPage() {
-  const router = useRouter()
-  const { toast } = useToast()
-  const [isLoading, setIsLoading] = useState(false)
-  const [methods, setMethods] = useState<any[]>([])
+  const router = useRouter();
+  const { toast } = useToast();
+  const [isLoading, setIsLoading] = useState(false);
+  const [methods, setMethods] = useState<any[]>([]);
   const [profile, setProfile] = useState<{
-    id: string
-    username: string // Adicionado
-    role: string
-    concurrent_attacks: number
-    max_concurrent_attacks: number
-    max_time: number
-    plan_id?: string | null // Added plan_id
-    plans?: { name: string; price: number }
-  } | null>(null)
-  const [selectedMethod, setSelectedMethod] = useState<any>(null)
+    id: string;
+    username: string;
+    role: string;
+    concurrent_attacks: number;
+    max_concurrent_attacks: number;
+    max_time: number;
+    plan_id?: string | null;
+    plans?: { name: string; price: number };
+  } | null>(null);
+  const [csrfToken, setCsrfToken] = useState<string>("");
 
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: {
       host: "",
       port: 80,
-      time: 30, // Valor padrão definido como 60 segundos
+      time: 30,
       method: "",
     },
-  })
+  });
 
   useEffect(() => {
     async function fetchData() {
+      // Gerar token CSRF
+      const token = createCsrfToken();
+      setCsrfToken(token);
+
       // Get user profile
       const {
         data: { user },
-      } = await supabase.auth.getUser()
+      } = await supabase.auth.getUser();
 
       if (!user) {
-        router.push("/login")
-        return
+        router.push("/login");
+        return;
       }
 
-      const { data: profileData } = await supabase.from("profiles").select("*, plans(*)").eq("id", user.id).single()
+      const { data: profileData, error } = await supabase
+        .from("profiles")
+        .select("*, plans(*)")
+        .eq("id", user.id)
+        .single();
 
-      if (profileData) {
-        setProfile({
-          ...profileData,
-          max_concurrent_attacks: profileData.plan_id ? 
-            (profileData.plans?.max_concurrent_attacks || profileData.max_concurrent_attacks || 0) : 0,
-          max_time: profileData.plans?.max_time || profileData.max_time || 0,
-        })
-        form.setValue("time", 30) // Default value remains 60 seconds
+      if (error || !profileData) {
+        toast({
+          title: "Error",
+          description: "Failed to load profile. Please try again.",
+          variant: "destructive",
+        });
+        router.push("/login");
+        return;
       }
+
+      setProfile({
+        ...profileData,
+        max_concurrent_attacks: profileData.plan_id
+          ? profileData.plans?.max_concurrent_attacks || profileData.max_concurrent_attacks || 0
+          : 0,
+        max_time: profileData.plans?.max_time || profileData.max_time || 0,
+      });
+      form.setValue("time", 30);
 
       // Get attack methods
-      const { data: methodsData } = await supabase.from("attack_methods").select("*")
+      const { data: methodsData, error: methodsError } = await supabase.from("attack_methods").select("*");
 
-      if (methodsData) {
-        // Sort methods by name in ascending order
-        const sortedMethods = methodsData.sort((a, b) => a.name.localeCompare(b.name))
-        setMethods(sortedMethods)
+      if (methodsError || !methodsData) {
+        toast({
+          title: "Error",
+          description: "Failed to load attack methods.",
+          variant: "destructive",
+        });
+        return;
       }
+
+      const sortedMethods = methodsData.sort((a, b) => a.name.localeCompare(b.name));
+      setMethods(sortedMethods);
     }
 
-    fetchData()
-  }, [router, form])
-
-  // Watch for method changes to display API endpoint info
-  const watchMethod = form.watch("method")
-
-  useEffect(() => {
-    if (watchMethod && methods.length > 0) {
-      const method = methods.find((m) => m.id === watchMethod)
-      setSelectedMethod(method)
-    } else {
-      setSelectedMethod(null)
-    }
-  }, [watchMethod, methods])
+    fetchData();
+  }, [router, form, toast]);
 
   async function onSubmit(values: z.infer<typeof formSchema>) {
-    if (!profile) return
+    if (!profile) return;
 
-    // Prevent users on the "free" plan or with no plan_id from attacking
-    if (profile.plans?.name === "free" || !profile
-      .plan_id) {
-      toast({
-        title: "Error",
-        description: "You don't have active plan.",
-        variant: "destructive",
-      })
-      return
-    }
+    setIsLoading(true);
 
     try {
-      // Sincronizar o estado do contador de ataques concorrentes
-      const { data: updatedProfile, error: profileError } = await supabase
-        .from("profiles")
-        .select("concurrent_attacks, max_concurrent_attacks")
-        .eq("id", profile.id)
-        .single()
-
-      if (profileError || !updatedProfile) {
-        toast({
-          title: "Error",
-          description: "Failed to fetch updated profile data.",
-          variant: "destructive",
-        })
-        console.error("Error fetching profile data:", profileError)
-        return
-      }
-
-      setProfile((prev) => {
-        if (!prev) return null
-        return {
-          ...prev,
-          concurrent_attacks: updatedProfile.concurrent_attacks,
-        }
-      })
-
-      // Verificar se o limite de ataques concorrentes foi atingido
-      if (updatedProfile.concurrent_attacks >= updatedProfile.max_concurrent_attacks) {
-        toast({
-          title: "Error",
-          description: "You have reached your maximum concurrent attacks limit.",
-          variant: "destructive",
-        })
-        return
-      }
-
-      // Verificar se o tempo está dentro do limite permitido
-      if (values.time > profile.max_time) {
-        form.setError("time", {
-          message: `Maximum time allowed is ${profile.max_time} seconds`,
-        })
-        return
-      }
-
-      setIsLoading(true)
-
-      const selectedMethodDetails = methods.find((m) => m.id === values.method)
+      const selectedMethodDetails = methods.find((m) => m.id === values.method);
 
       // Enviar dados para a API route
       const response = await fetch("/api/attack", {
@@ -175,73 +141,35 @@ export default function AttackPage() {
           username: profile.username,
           methodName: selectedMethodDetails?.name,
           apiEndpoint: selectedMethodDetails?.api_endpoint,
+          csrfToken,
         }),
-      })
+      });
 
-      const result = await response.json()
+      const result = await response.json();
 
       if (!response.ok) {
-        throw new Error(result.error || "Failed to start attack.")
+        throw new Error(result.error || "Failed to start attack.");
       }
-
-      // Expirar ataque após o tempo definido
-      setTimeout(async () => {
-        // Atualizar o status do ataque para "completed"
-        const { error: updateStatusError } = await supabase
-          .from("attack_history")
-          .update({ status: "completed" })
-          .eq("user_id", profile.id)
-          .eq("host", values.host)
-          .eq("port", values.port)
-          .eq("method_id", values.method)
-
-        if (updateStatusError) {
-          console.error("Failed to update attack status:", updateStatusError)
-          return
-        }
-
-        // Zerar ataques concorrentes
-        const { error: resetError } = await supabase
-          .from("profiles")
-          .update({ concurrent_attacks: 0 })
-          .eq("id", profile.id)
-
-        if (!resetError) {
-          setProfile((prev) => {
-            if (!prev) return null
-            return {
-              ...prev,
-              concurrent_attacks: 0,
-            }
-          })
-        } else {
-          console.error("Failed to reset concurrent attacks:", resetError)
-        }
-
-        toast({
-          title: "Attack Completed",
-          description: `Attack on ${values.host}:${values.port} has completed.`,
-        })
-      }, values.time * 1000)
 
       toast({
         title: "Success",
         description: (
           <div className="flex items-center gap-2">
             <CheckCircle className="h-5 w-5 text-green-500" />
-            <span>Attacks sent successfully.</span>
+            <span>Attack sent successfully.</span>
           </div>
         ),
-      })
+      });
+
+      form.reset();
     } catch (error: any) {
       toast({
         title: "Error",
         description: error.message || "Failed to start attack. Please try again.",
         variant: "destructive",
-      })
-      console.error("Error during attack submission:", error)
+      });
     } finally {
-      setIsLoading(false)
+      setIsLoading(false);
     }
   }
 
@@ -270,12 +198,13 @@ export default function AttackPage() {
 
         <Card className="bg-black/30 border-white/10 text-white w-full max-w-2xl">
           <CardHeader>
-            <CardTitle>Panel</CardTitle>
-            <CardDescription className="text-white/70">Attack panel</CardDescription>
+            <CardTitle>Attack Panel</CardTitle>
+            <CardDescription className="text-white/70">Configure and start your attack</CardDescription>
           </CardHeader>
           <CardContent>
             <Form {...form}>
               <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+                <input type="hidden" name="csrfToken" value={csrfToken} />
                 <div className="grid grid-cols-1 gap-4">
                   <FormField
                     control={form.control}
@@ -288,6 +217,7 @@ export default function AttackPage() {
                             placeholder="71.71.71.71"
                             {...field}
                             className="bg-black/50 border-white/20 text-white"
+                            disabled={isLoading}
                           />
                         </FormControl>
                         <FormMessage />
@@ -308,6 +238,7 @@ export default function AttackPage() {
                             type="number"
                             {...field}
                             className="bg-black/50 border-white/20 text-white"
+                            disabled={isLoading}
                           />
                         </FormControl>
                         <FormMessage />
@@ -320,15 +251,19 @@ export default function AttackPage() {
                     name="time"
                     render={({ field }) => (
                       <FormItem>
-                        <FormLabel className="text-white">Time</FormLabel>
+                        <FormLabel className="text-white">Time (seconds)</FormLabel>
                         <FormControl>
                           <Input
                             type="number"
                             {...field}
                             className="bg-black/50 border-white/20 text-white"
-                            placeholder="30" // Always display 30 as the placeholder
+                            placeholder="30"
+                            disabled={isLoading}
                           />
                         </FormControl>
+                        <FormDescription className="text-white/70">
+                          Max time: {profile?.max_time || "N/A"} seconds
+                        </FormDescription>
                         <FormMessage />
                       </FormItem>
                     )}
@@ -342,7 +277,7 @@ export default function AttackPage() {
                     render={({ field }) => (
                       <FormItem>
                         <FormLabel className="text-white">Method</FormLabel>
-                        <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <Select onValueChange={field.onChange} defaultValue={field.value} disabled={isLoading}>
                           <FormControl>
                             <SelectTrigger className="bg-black/50 border-white/20 text-white">
                               <SelectValue placeholder="Select" />
@@ -378,5 +313,5 @@ export default function AttackPage() {
         </Card>
       </div>
     </DashboardLayout>
-  )
+  );
 }

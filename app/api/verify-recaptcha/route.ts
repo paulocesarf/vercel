@@ -1,29 +1,64 @@
-import { NextApiRequest, NextApiResponse } from 'next'
+import { NextResponse } from 'next/server';
+import pino from 'pino';
+import { rateLimit } from '@/lib/rate-limit';
+import { verifyCsrfToken } from '@/lib/csrf';
+import { z } from 'zod';
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ success: false, error: 'Method not allowed' })
-  }
+const logger = pino({ level: 'info' });
 
-  const { token } = req.body
+// Esquema de validação
+const verifySchema = z.object({
+  token: z.string().min(1, { message: 'No token provided' }),
+  action: z.enum(['login', 'register'], { message: 'Invalid action' }),
+  csrfToken: z.string(),
+});
 
-  if (!token) {
-    return res.status(400).json({ success: false, error: 'No token provided' })
-  }
-
+export async function POST(request: Request) {
   try {
-    const response = await fetch('https://www.google.com/recaptcha/api/siteverify', {
+    // Rate limiting: 10 requisições por IP em 1 minuto
+    const { success, limit, remaining } = await rateLimit(request, { max: 10, windowMs: 60 * 1000 });
+    if (!success) {
+      logger.warn({ ip: request.headers.get('x-forwarded-for') }, 'Rate limit exceeded for verify-captcha');
+      return NextResponse.json(
+        { success: false, error: 'Too many requests' },
+        { status: 429, headers: { 'X-RateLimit-Limit': limit, 'X-RateLimit-Remaining': remaining } }
+      );
+    }
+
+    const body = await request.json();
+    const parsed = verifySchema.safeParse(body);
+    if (!parsed.success) {
+      logger.warn({ errors: parsed.error.errors }, 'Invalid input for verify-captcha');
+      return NextResponse.json({ success: false, error: 'Invalid input' }, { status: 400 });
+    }
+
+    const { token, action, csrfToken } = parsed.data;
+
+    // Validar CSRF
+    if (!verifyCsrfToken(csrfToken, csrfToken)) {
+      logger.warn({ ip: request.headers.get('x-forwarded-for') }, 'Invalid CSRF token in verify-captcha');
+      return NextResponse.json({ success: false, error: 'Invalid CSRF token' }, { status: 403 });
+    }
+
+    // Verificar reCAPTCHA com Google
+    const recaptchaResponse = await fetch('https://www.google.com/recaptcha/api/siteverify', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
       },
-      body: `secret=6LdX8x4rAAAAADsHR60ZSEBrloFIowG2XYL00DZ-&response=${token}`,
-    })
+      body: `secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${token}&remoteip=${request.headers.get('x-forwarded-for') || ''}`,
+    });
 
-    const data = await response.json()
-    return res.status(200).json(data)
+    const recaptchaData = await recaptchaResponse.json();
+    if (!recaptchaData.success || recaptchaData.action !== action || recaptchaData.score < 0.5) {
+      logger.warn({ ip: request.headers.get('x-forwarded-for'), action }, 'reCAPTCHA verification failed');
+      return NextResponse.json({ success: false, error: 'CAPTCHA verification failed' }, { status: 400 });
+    }
+
+    logger.info({ ip: request.headers.get('x-forwarded-for'), action }, 'reCAPTCHA verified successfully');
+    return NextResponse.json({ success: true });
   } catch (error) {
-    console.error('reCAPTCHA verification error:', error)
-    return res.status(500).json({ success: false, error: 'Server error' })
+    logger.error({ error }, 'reCAPTCHA verification error');
+    return NextResponse.json({ success: false, error: 'Server error' }, { status: 500 });
   }
 }
